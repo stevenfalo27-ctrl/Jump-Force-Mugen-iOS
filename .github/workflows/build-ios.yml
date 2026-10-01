@@ -46,9 +46,8 @@ jobs:
           SH
           chmod +x "$GITHUB_WORKSPACE/.ci-bin/curl"
           echo "$GITHUB_WORKSPACE/.ci-bin" >> "$GITHUB_PATH"
-          "$GITHUB_WORKSPACE/.ci-bin/curl" --version | head -1
 
-      - name: Prepare builder
+      - name: Prepare and harden builder
         shell: bash
         run: |
           set -euo pipefail
@@ -56,14 +55,40 @@ jobs:
           rm -rf _builder
           mkdir -p _builder
           unzip -q Jump_Force_Mugen_iOS_Builder.zip -d _builder
-          test -f "_builder/Jump_Force_Mugen_New_Starter/build/build_ios.sh"
-
-      - name: Validate build script
-        shell: bash
-        run: |
-          set -euo pipefail
-          SCRIPT="_builder/Jump_Force_Mugen_New_Starter/build/build_ios.sh"
+          ROOT="_builder/Jump_Force_Mugen_New_Starter"
+          SCRIPT="$ROOT/build/build_ios.sh"
+          test -f "$SCRIPT"
           chmod +x "$SCRIPT"
+          cat > "$ROOT/ffmpeg_host_c11_patch.py" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          old = '''check_host_cflags_cc -std=$stdc ctype.h "__STDC_VERSION__ >= 201112L" ||
+          check_host_cflags_cc -std=c11 ctype.h "__STDC_VERSION__ >= 201112L" || die "Host compiler lacks C11 support"'''
+          new = '''check_host_cflags_cc -std=$stdc ctype.h "__STDC_VERSION__ >= 201112L" ||
+          check_host_cflags_cc -std=c11 ctype.h "__STDC_VERSION__ >= 201112L"'''
+          if old not in s:
+              raise SystemExit('FFmpeg 7.1 host-C11 block was not found; refusing to build.')
+          p.write_text(s.replace(old, new, 1))
+          print('Applied macOS host-C11 compatibility patch to FFmpeg configure.')
+          PY
+          python3 - "$SCRIPT" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          marker = 'git checkout "$FFMPEG_REV"'
+          hook = 'python3 "$REPO_ROOT/ffmpeg_host_c11_patch.py" "$FFMPEG_SRCDIR/configure"'
+          if hook in s:
+              print('FFmpeg patch hook already present.')
+          elif marker not in s:
+              raise SystemExit('FFmpeg checkout marker not found in build script; refusing to build.')
+          else:
+              s = s.replace(marker, marker + '\\n' + hook, 1)
+              p.write_text(s)
+              print('Inserted FFmpeg host-C11 patch hook.')
+          PY
           bash -n "$SCRIPT"
 
       - name: Build unsigned IPA
