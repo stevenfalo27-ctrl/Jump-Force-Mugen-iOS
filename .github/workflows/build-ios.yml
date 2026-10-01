@@ -38,28 +38,58 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test -f Jump_Force_Mugen_iOS_Builder.zip
           rm -rf _builder
           mkdir -p _builder
           unzip -q Jump_Force_Mugen_iOS_Builder.zip -d _builder
           test -f "_builder/Jump_Force_Mugen_New_Starter/build/build_ios.sh"
+
+      - name: Harden MoltenVK download
+        shell: bash
+        run: |
+          set -euo pipefail
+          SCRIPT="_builder/Jump_Force_Mugen_New_Starter/build/build_ios.sh"
+          python3 - "$SCRIPT" <<'PY'
+          import pathlib, sys
+          p = pathlib.Path(sys.argv[1])
+          s = p.read_text()
+          old = '''download_file \\
+          "https://github.com/KhronosGroup/MoltenVK/releases/download/$MOLTENVK_REV/MoltenVK-ios.tar" \\
+          "$work/MoltenVK-ios.tar"'''
+          new = '''curl -fL --retry 10 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 900 \\
+          -o "$work/MoltenVK-ios.tar" \\
+          "https://github.com/KhronosGroup/MoltenVK/releases/download/$MOLTENVK_REV/MoltenVK-ios.tar"'''
+          if old not in s:
+              raise SystemExit("Expected MoltenVK download block was not found; refusing to build with an unpatched downloader.")
+          p.write_text(s.replace(old, new, 1))
+          print("Patched MoltenVK download with retries and timeouts.")
+          PY
+          grep -n -A3 -B1 'MoltenVK-ios.tar' "$SCRIPT"
+
+      - name: Validate build script
+        shell: bash
+        run: |
+          set -euo pipefail
+          SCRIPT="_builder/Jump_Force_Mugen_New_Starter/build/build_ios.sh"
+          chmod +x "$SCRIPT"
+          bash -n "$SCRIPT"
 
       - name: Build unsigned IPA
         shell: bash
         run: |
           set -euo pipefail
           cd "_builder/Jump_Force_Mugen_New_Starter/build"
-          chmod +x build_ios.sh
           ./build_ios.sh
 
-      - name: Locate IPA
+      - name: Locate and validate IPA
         id: ipa
         shell: bash
         run: |
           set -euo pipefail
           IPA="$(find "$GITHUB_WORKSPACE/_builder" "$GITHUB_WORKSPACE" -type f -name '*.ipa' -print -quit 2>/dev/null || true)"
           if [ -z "$IPA" ]; then
-            echo "No IPA was produced."
-            find "$GITHUB_WORKSPACE/_builder" -maxdepth 8 -type f | sort | tail -200
+            echo "ERROR: build_ios.sh completed without producing an IPA."
+            find "$GITHUB_WORKSPACE/_builder" -maxdepth 10 -type f | sort | tail -250
             exit 1
           fi
           cp "$IPA" "$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa"
