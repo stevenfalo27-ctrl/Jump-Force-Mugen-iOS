@@ -93,6 +93,12 @@ jobs:
 
       - name: Build unsigned IPA
         shell: bash
+        env:
+          HOSTCC: /usr/bin/clang
+          HOSTCXX: /usr/bin/clang++
+          HOSTLD: /usr/bin/clang
+          HOSTCFLAGS: -std=c11
+          HOSTCXXFLAGS: -std=c++11
         run: |
           set -euo pipefail
           cd "_builder/Jump_Force_Mugen_New_Starter/build"
