@@ -24,12 +24,14 @@ jobs:
 
       - name: Install native build dependencies
         shell: bash
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
         run: |
           set -euo pipefail
-          brew update
           brew install git pkg-config nasm yasm libxmp sdl2 molten-vk
           echo "Go: $(go version)"
           echo "NASM: $(nasm -v | head -1)"
+          echo "YASM: $(yasm --version | head -1)"
           echo "pkg-config: $(pkg-config --version)"
 
       - name: Prepare builder
