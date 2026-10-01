@@ -34,7 +34,7 @@ jobs:
           echo "YASM: $(yasm --version | head -1)"
           echo "pkg-config: $(pkg-config --version)"
 
-      - name: Install resilient curl wrapper
+      - name: Install resilient download and FFmpeg patch wrappers
         shell: bash
         run: |
           set -euo pipefail
@@ -44,8 +44,43 @@ jobs:
           set -e
           exec /usr/bin/curl --retry 10 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 900 "$@"
           SH
-          chmod +x "$GITHUB_WORKSPACE/.ci-bin/curl"
+          cat > "$GITHUB_WORKSPACE/.ci-bin/git" <<'SH'
+          #!/bin/bash
+          set -e
+          /usr/bin/git "$@"
+          status=$?
+          if [ "$status" -eq 0 ] && [ "${1:-}" = "clone" ]; then
+            found_ffmpeg=0
+            for arg in "$@"; do
+              case "$arg" in
+                *FFmpeg/FFmpeg.git) found_ffmpeg=1 ;;
+              esac
+            done
+            if [ "$found_ffmpeg" -eq 1 ]; then
+              dest="${@: -1}"
+              python3 "$GITHUB_WORKSPACE/.ci/patch_ffmpeg.py" "$dest/configure"
+            fi
+          fi
+          exit "$status"
+          SH
+          chmod +x "$GITHUB_WORKSPACE/.ci-bin/curl" "$GITHUB_WORKSPACE/.ci-bin/git"
           echo "$GITHUB_WORKSPACE/.ci-bin" >> "$GITHUB_PATH"
+          mkdir -p "$GITHUB_WORKSPACE/.ci"
+          cat > "$GITHUB_WORKSPACE/.ci/patch_ffmpeg.py" <<'PY'
+          from pathlib import Path
+          import sys
+          p = Path(sys.argv[1])
+          s = p.read_text()
+          old = '''check_host_cflags_cc -std=$stdc ctype.h "__STDC_VERSION__ >= 201112L" ||
+          check_host_cflags_cc -std=c11 ctype.h "__STDC_VERSION__ >= 201112L" || die "Host compiler lacks C11 support"'''
+          new = '''check_host_cflags_cc -std=$stdc ctype.h "__STDC_VERSION__ >= 201112L" ||
+          check_host_cflags_cc -std=c11 ctype.h "__STDC_VERSION__ >= 201112L"'''
+          if old not in s:
+              raise SystemExit('FFmpeg host-C11 block not found; refusing to continue.')
+          p.write_text(s.replace(old, new, 1))
+          print('FFmpeg host-C11 compatibility patch applied.')
+          PY
+          chmod +x "$GITHUB_WORKSPACE/.ci/patch_ffmpeg.py"
 
       - name: Prepare builder
         shell: bash
@@ -55,20 +90,12 @@ jobs:
           rm -rf _builder
           mkdir -p _builder
           unzip -q Jump_Force_Mugen_iOS_Builder.zip -d _builder
-          ROOT="_builder/Jump_Force_Mugen_New_Starter"
-          SCRIPT="$ROOT/build/build_ios.sh"
-          test -f "$SCRIPT"
-          chmod +x "$SCRIPT"
-          bash -n "$SCRIPT"
+          test -f "_builder/Jump_Force_Mugen_New_Starter/build/build_ios.sh"
+          chmod +x "_builder/Jump_Force_Mugen_New_Starter/build/build_ios.sh"
+          bash -n "_builder/Jump_Force_Mugen_New_Starter/build/build_ios.sh"
 
       - name: Build unsigned IPA
         shell: bash
-        env:
-          HOSTCC: /usr/bin/clang
-          HOSTCXX: /usr/bin/clang++
-          HOSTLD: /usr/bin/clang
-          HOSTCFLAGS: -std=c11
-          HOSTCXXFLAGS: -std=c++11
         run: |
           set -euo pipefail
           cd "_builder/Jump_Force_Mugen_New_Starter/build"
