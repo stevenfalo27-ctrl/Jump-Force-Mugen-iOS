@@ -50,23 +50,25 @@ jobs:
           set -euo pipefail
           SCRIPT="_builder/Jump_Force_Mugen_New_Starter/build/build_ios.sh"
           python3 - "$SCRIPT" <<'PY'
-          import pathlib, sys
+          import pathlib, re, sys
           p = pathlib.Path(sys.argv[1])
           s = p.read_text()
-          url = 'https://github.com/KhronosGroup/MoltenVK/releases/download/$MOLTENVK_REV/MoltenVK-ios.tar'
-          out = '"$work/MoltenVK-ios.tar"'
-          u = s.find(url)
-          if u < 0:
-              raise SystemExit('Expected MoltenVK URL was not found; refusing to build.')
-          start = s.rfind('download_file', 0, u)
-          end = s.find(out, u)
-          if start < 0 or end < 0 or end < start:
-              raise SystemExit('Expected MoltenVK download command was not found; refusing to build.')
-          end += len(out)
-          replacement = '''curl -fL --retry 10 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 900 \\\n  -o "$work/MoltenVK-ios.tar" \\\n  "''' + url + '''"'''.strip()
+          marker = 'MoltenVK-ios.tar'
+          pos = s.find(marker)
+          if pos < 0:
+              raise SystemExit('MoltenVK-ios.tar was not found; refusing to build.')
+          start = s.rfind('download_file', 0, pos)
+          if start < 0:
+              raise SystemExit('MoltenVK download_file call was not found; refusing to build.')
+          tail = s[pos:]
+          m = re.search(r'["\']\$work/MoltenVK-ios\\.tar["\']', tail)
+          if not m:
+              raise SystemExit('MoltenVK output path was not found; refusing to build.')
+          end = pos + m.end()
+          replacement = '''curl -fL --retry 10 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 900 \\\n  -o "$work/MoltenVK-ios.tar" \\\n  "https://github.com/KhronosGroup/MoltenVK/releases/download/v1.4.2/MoltenVK-ios.tar"'''.strip()
           s = s[:start] + replacement + s[end:]
           p.write_text(s)
-          print('Patched MoltenVK download with retries and timeouts.')
+          print('Patched MoltenVK downloader with 10 retries and a 15-minute transfer timeout.')
           PY
           grep -n -A3 -B2 'MoltenVK-ios.tar' "$SCRIPT"
 
