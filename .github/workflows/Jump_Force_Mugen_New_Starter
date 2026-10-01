@@ -1,0 +1,19 @@
+.github/
+  workflows/
+    build-ios.yml
+
+data/
+  roster.csv
+  roster_names.txt
+  select.def
+  stages.csv
+  modes.csv
+  modes.txt
+
+chars/
+  Placeholder/
+
+stages/
+build/
+README.md
+...
