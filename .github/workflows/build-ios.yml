@@ -53,18 +53,22 @@ jobs:
           import pathlib, sys
           p = pathlib.Path(sys.argv[1])
           s = p.read_text()
-          old = '''download_file \\
-          "https://github.com/KhronosGroup/MoltenVK/releases/download/$MOLTENVK_REV/MoltenVK-ios.tar" \\
-          "$work/MoltenVK-ios.tar"'''
-          new = '''curl -fL --retry 10 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 900 \\
-          -o "$work/MoltenVK-ios.tar" \\
-          "https://github.com/KhronosGroup/MoltenVK/releases/download/$MOLTENVK_REV/MoltenVK-ios.tar"'''
-          if old not in s:
-              raise SystemExit("Expected MoltenVK download block was not found; refusing to build with an unpatched downloader.")
-          p.write_text(s.replace(old, new, 1))
-          print("Patched MoltenVK download with retries and timeouts.")
+          url = 'https://github.com/KhronosGroup/MoltenVK/releases/download/$MOLTENVK_REV/MoltenVK-ios.tar'
+          out = '"$work/MoltenVK-ios.tar"'
+          u = s.find(url)
+          if u < 0:
+              raise SystemExit('Expected MoltenVK URL was not found; refusing to build.')
+          start = s.rfind('download_file', 0, u)
+          end = s.find(out, u)
+          if start < 0 or end < 0 or end < start:
+              raise SystemExit('Expected MoltenVK download command was not found; refusing to build.')
+          end += len(out)
+          replacement = '''curl -fL --retry 10 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 900 \\\n  -o "$work/MoltenVK-ios.tar" \\\n  "''' + url + '''"'''.strip()
+          s = s[:start] + replacement + s[end:]
+          p.write_text(s)
+          print('Patched MoltenVK download with retries and timeouts.')
           PY
-          grep -n -A3 -B1 'MoltenVK-ios.tar' "$SCRIPT"
+          grep -n -A3 -B2 'MoltenVK-ios.tar' "$SCRIPT"
 
       - name: Validate build script
         shell: bash
