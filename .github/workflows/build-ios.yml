@@ -5,20 +5,32 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15-intel
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Install Go
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: 'stable'
+          cache: false
+
+      - name: Install native build dependencies
         shell: bash
         run: |
           set -euo pipefail
           brew update
-          brew install go
+          brew install git pkg-config nasm yasm libxmp sdl2 molten-vk
+          echo "Go: $(go version)"
+          echo "NASM: $(nasm -v | head -1)"
+          echo "pkg-config: $(pkg-config --version)"
 
       - name: Prepare builder
         shell: bash
@@ -27,49 +39,36 @@ jobs:
           rm -rf _builder
           mkdir -p _builder
           unzip -q Jump_Force_Mugen_iOS_Builder.zip -d _builder
-          echo "Builder contents:"
-          find _builder -maxdepth 4 -type f | sort | head -200
-
-      - name: Locate iOS build script
-        id: locate
-        shell: bash
-        run: |
-          set -euo pipefail
-          SCRIPT="$(find _builder -type f -name 'build_ios.sh' -print -quit)"
-          if [ -z "$SCRIPT" ]; then
-            echo "build_ios.sh was not found in the builder archive."
-            exit 1
-          fi
-          DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
-          echo "script=$SCRIPT" >> "$GITHUB_OUTPUT"
-          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
-          echo "Found: $SCRIPT"
+          test -f "_builder/Jump_Force_Mugen_New_Starter/build/build_ios.sh"
 
       - name: Build unsigned IPA
         shell: bash
         run: |
           set -euo pipefail
-          cd "${{ steps.locate.outputs.dir }}"
+          cd "_builder/Jump_Force_Mugen_New_Starter/build"
           chmod +x build_ios.sh
           ./build_ios.sh
 
-      - name: Find IPA
+      - name: Locate IPA
+        id: ipa
         shell: bash
         run: |
           set -euo pipefail
           IPA="$(find "$GITHUB_WORKSPACE/_builder" "$GITHUB_WORKSPACE" -type f -name '*.ipa' -print -quit 2>/dev/null || true)"
           if [ -z "$IPA" ]; then
             echo "No IPA was produced."
-            echo "Build output:"
-            find "$GITHUB_WORKSPACE/_builder" -maxdepth 6 -type f | sort | tail -200
+            find "$GITHUB_WORKSPACE/_builder" -maxdepth 8 -type f | sort | tail -200
             exit 1
           fi
           cp "$IPA" "$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa"
-          echo "IPA: $IPA"
+          test -s "$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa"
+          echo "path=$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa" >> "$GITHUB_OUTPUT"
+          ls -lh "$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa"
 
-      - name: Upload IPA
+      - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: Jump-Force-Mugen-iOS-IPA
-          path: Jump-Force-Mugen-iOS.ipa
+          path: ${{ steps.ipa.outputs.path }}
           if-no-files-found: error
+          retention-days: 14
