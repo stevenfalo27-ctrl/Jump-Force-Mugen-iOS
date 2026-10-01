@@ -3,7 +3,8 @@ name: Build Jump Force Mugen iOS IPA
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -28,59 +29,63 @@ jobs:
           HOMEBREW_NO_AUTO_UPDATE: '1'
         run: |
           set -euo pipefail
-          brew install git pkg-config nasm yasm libxmp sdl2 molten-vk
+          brew install pkg-config nasm yasm libxmp sdl2 molten-vk
           echo "Go: $(go version)"
-          echo "NASM: $(nasm -v | head -1)"
-          echo "YASM: $(yasm --version | head -1)"
+          echo "Architecture: $(uname -m)"
           echo "pkg-config: $(pkg-config --version)"
+          echo "clang: $(clang --version | head -1)"
 
       - name: Install resilient download and FFmpeg patch wrappers
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$GITHUB_WORKSPACE/.ci-bin"
-          cat > "$GITHUB_WORKSPACE/.ci-bin/curl" <<'SH'
-          #!/bin/bash
-          set -e
-          exec /usr/bin/curl --retry 10 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 900 "$@"
-          SH
-          cat > "$GITHUB_WORKSPACE/.ci-bin/git" <<'SH'
-          #!/bin/bash
-          set -e
-          /usr/bin/git "$@"
-          status=$?
-          if [ "$status" -eq 0 ] && [ "${1:-}" = "clone" ]; then
-            found_ffmpeg=0
-            for arg in "$@"; do
-              case "$arg" in
-                *FFmpeg/FFmpeg.git) found_ffmpeg=1 ;;
-              esac
-            done
-            if [ "$found_ffmpeg" -eq 1 ]; then
-              dest="${@: -1}"
-              python3 "$GITHUB_WORKSPACE/.ci/patch_ffmpeg.py" "$dest/configure"
-            fi
-          fi
-          exit "$status"
-          SH
-          chmod +x "$GITHUB_WORKSPACE/.ci-bin/curl" "$GITHUB_WORKSPACE/.ci-bin/git"
-          echo "$GITHUB_WORKSPACE/.ci-bin" >> "$GITHUB_PATH"
-          mkdir -p "$GITHUB_WORKSPACE/.ci"
+          mkdir -p "$GITHUB_WORKSPACE/.ci-bin" "$GITHUB_WORKSPACE/.ci"
+
           cat > "$GITHUB_WORKSPACE/.ci/patch_ffmpeg.py" <<'PY'
           from pathlib import Path
+          import re
           import sys
+
           p = Path(sys.argv[1])
+          if not p.is_file():
+              raise SystemExit(f"FFmpeg configure not found: {p}")
+
           s = p.read_text()
-          old = '''check_host_cflags_cc -std=$stdc ctype.h "__STDC_VERSION__ >= 201112L" ||
-          check_host_cflags_cc -std=c11 ctype.h "__STDC_VERSION__ >= 201112L" || die "Host compiler lacks C11 support"'''
-          new = '''check_host_cflags_cc -std=$stdc ctype.h "__STDC_VERSION__ >= 201112L" ||
-          check_host_cflags_cc -std=c11 ctype.h "__STDC_VERSION__ >= 201112L"'''
-          if old not in s:
-              raise SystemExit('FFmpeg host-C11 block not found; refusing to continue.')
-          p.write_text(s.replace(old, new, 1))
-          print('FFmpeg host-C11 compatibility patch applied.')
+          if 'Host compiler lacks C11 support' not in s:
+              print("FFmpeg host-C11 fatal check not present; no patch needed.")
+              raise SystemExit(0)
+
+          patched = re.sub(
+              r'\s*\|\| die "Host compiler lacks C11 support"',
+              '',
+              s,
+              count=1,
+          )
+          if patched == s:
+              raise SystemExit("Could not safely patch FFmpeg host-C11 check.")
+          p.write_text(patched)
+          print("Applied FFmpeg macOS host-C11 compatibility patch.")
           PY
-          chmod +x "$GITHUB_WORKSPACE/.ci/patch_ffmpeg.py"
+
+          cat > "$GITHUB_WORKSPACE/.ci-bin/curl" <<'SH'
+          #!/bin/bash
+          exec /usr/bin/curl --retry 10 --retry-all-errors --retry-delay 5 --connect-timeout 30 --max-time 900 "$@"
+          SH
+
+          cat > "$GITHUB_WORKSPACE/.ci-bin/git" <<'SH'
+          #!/bin/bash
+          /usr/bin/git "$@"
+          rc=$?
+          if [ "$rc" -eq 0 ] && [ "${1:-}" = "checkout" ] && [ "$(basename "$PWD")" = "ffmpeg-src" ]; then
+            if [ -f "$PWD/configure" ]; then
+              python3 "$GITHUB_WORKSPACE/.ci/patch_ffmpeg.py" "$PWD/configure"
+            fi
+          fi
+          exit "$rc"
+          SH
+
+          chmod +x "$GITHUB_WORKSPACE/.ci-bin/curl" "$GITHUB_WORKSPACE/.ci-bin/git"
+          echo "$GITHUB_WORKSPACE/.ci-bin" >> "$GITHUB_PATH"
 
       - name: Prepare builder
         shell: bash
@@ -90,76 +95,20 @@ jobs:
           rm -rf _builder
           mkdir -p _builder
           unzip -q Jump_Force_Mugen_iOS_Builder.zip -d _builder
-          test -f "_builder/Jump_Force_Mugen_New_Starter/build/build_ios.sh"
-          chmod +x "_builder/Jump_Force_Mugen_New_Starter/build/build_ios.sh"
-          bash -n "_builder/Jump_Force_Mugen_New_Starter/build/build_ios.sh"
-
-      - name: Install FFmpeg-compatible git wrapper
-        shell: bash
-        run: |
-          set -euo pipefail
-          REAL_GIT="$(command -v git)"
-          mkdir -p "$GITHUB_WORKSPACE/.ci-bin"
-          cat > "$GITHUB_WORKSPACE/.ci-bin/git" <<SH
-          #!/bin/bash
-          set -e
-          "$REAL_GIT" "\$@"
-          rc=\$?
-          if [ \$rc -eq 0 ] && [ "\$(basename "\$PWD")" = "ffmpeg-src" ]; then
-            if printf '%s\n' "\$@" | grep -q '^checkout
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "_builder/Jump_Force_Mugen_New_Starter/build"
-          ./build_ios.sh
-
-      - name: Locate and validate IPA
-        id: ipa
-        shell: bash
-        run: |
-          set -euo pipefail
-          IPA="$(find "$GITHUB_WORKSPACE/_builder" "$GITHUB_WORKSPACE" -type f -name '*.ipa' -print -quit 2>/dev/null || true)"
-          if [ -z "$IPA" ]; then
-            echo "ERROR: build_ios.sh completed without producing an IPA."
-            find "$GITHUB_WORKSPACE/_builder" -maxdepth 10 -type f | sort | tail -250
-            exit 1
-          fi
-          cp "$IPA" "$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa"
-          test -s "$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa"
-          echo "path=$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa" >> "$GITHUB_OUTPUT"
-          ls -lh "$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa"
-
-      - name: Upload IPA artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Jump-Force-Mugen-iOS-IPA
-          path: ${{ steps.ipa.outputs.path }}
-          if-no-files-found: error
-          retention-days: 14; then
-              python3 - "\$PWD/configure" <<'PY'
-          from pathlib import Path
-          import sys
-          p = Path(sys.argv[1])
-          s = p.read_text()
-          old = 'check_host_cflags_cc -std=$stdc ctype.h "__STDC_VERSION__ >= 201112L" ||\\ncheck_host_cflags_cc -std=c11 ctype.h "__STDC_VERSION__ >= 201112L" || die "Host compiler lacks C11 support"'
-          new = 'check_host_cflags_cc -std=$stdc ctype.h "__STDC_VERSION__ >= 201112L" ||\\ncheck_host_cflags_cc -std=c11 ctype.h "__STDC_VERSION__ >= 201112L"'
-          if old in s:
-              p.write_text(s.replace(old, new, 1))
-              print("Applied FFmpeg macOS host-C11 compatibility patch.")
-          elif 'Host compiler lacks C11 support' in s:
-              raise SystemExit("FFmpeg host-C11 check has unexpected format; refusing to build.")
-          else:
-              print("FFmpeg host-C11 fatal check not present; no patch needed.")
-          PY
-            fi
-          fi
-          exit \$rc
-          SH
-          chmod +x "$GITHUB_WORKSPACE/.ci-bin/git"
-          echo "$GITHUB_WORKSPACE/.ci-bin" >> "$GITHUB_PATH"
+          ROOT="_builder/Jump_Force_Mugen_New_Starter"
+          SCRIPT="$ROOT/build/build_ios.sh"
+          test -f "$SCRIPT"
+          chmod +x "$SCRIPT"
+          bash -n "$SCRIPT"
 
       - name: Build unsigned IPA
         shell: bash
+        env:
+          HOSTCC: /usr/bin/clang
+          HOSTCXX: /usr/bin/clang++
+          HOSTLD: /usr/bin/clang
+          HOSTCFLAGS: -std=c11
+          HOSTCXXFLAGS: -std=c++11
         run: |
           set -euo pipefail
           cd "_builder/Jump_Force_Mugen_New_Starter/build"
@@ -173,11 +122,13 @@ jobs:
           IPA="$(find "$GITHUB_WORKSPACE/_builder" "$GITHUB_WORKSPACE" -type f -name '*.ipa' -print -quit 2>/dev/null || true)"
           if [ -z "$IPA" ]; then
             echo "ERROR: build_ios.sh completed without producing an IPA."
-            find "$GITHUB_WORKSPACE/_builder" -maxdepth 10 -type f | sort | tail -250
+            find "$GITHUB_WORKSPACE/_builder" -maxdepth 12 -type f | sort | tail -300
             exit 1
           fi
           cp "$IPA" "$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa"
           test -s "$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa"
+          file "$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa"
+          unzip -tq "$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa"
           echo "path=$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa" >> "$GITHUB_OUTPUT"
           ls -lh "$GITHUB_WORKSPACE/Jump-Force-Mugen-iOS.ipa"
 
