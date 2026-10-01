@@ -13,6 +13,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install Go
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew update
+          brew install go
+
       - name: Prepare builder
         shell: bash
         run: |
